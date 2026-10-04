@@ -1,0 +1,109 @@
+WEBVTT
+
+1
+00:00:00.000 --> 00:00:03.166
+Behind every wind turbine and solar panel,
+
+2
+00:00:03.166 --> 00:00:06.332
+there are digital controllers to keep operations running.
+
+3
+00:00:06.332 --> 00:00:08.970
+When a device does something unexpected,
+
+4
+00:00:08.970 --> 00:00:11.609
+how do you spot it—and know something is wrong?
+
+5
+00:00:11.609 --> 00:00:15.302
+Many of these controllers are too limited to run conventional antivirus.
+
+6
+00:00:15.302 --> 00:00:16.885
+Network monitoring helps—
+
+7
+00:00:16.885 --> 00:00:20.051
+but LayerOne adds visibility into the controller’s physical activity.
+
+8
+00:00:20.051 --> 00:00:21.634
+Meet LayerOne.
+
+9
+00:00:21.634 --> 00:00:24.800
+A new perspective on device security.
+
+10
+00:00:24.800 --> 00:00:28.494
+Watch the physical activity behind the software.
+
+11
+00:00:28.494 --> 00:00:31.132
+As a controller executes tasks,
+
+12
+00:00:31.132 --> 00:00:33.771
+it draws current through its power pins,
+
+13
+00:00:33.771 --> 00:00:35.882
+creating electrical signatures.
+
+14
+00:00:35.882 --> 00:00:40.103
+LayerOne measures these patterns to establish a normal baseline.
+
+15
+00:00:40.103 --> 00:00:43.797
+Malware can introduce unexpected tasks that alter those patterns,
+
+16
+00:00:43.797 --> 00:00:46.435
+allowing LayerOne to flag suspicious changes.
+
+17
+00:00:46.435 --> 00:00:49.601
+It watches from outside the production network.
+
+18
+00:00:49.601 --> 00:00:51.712
+No endpoint agent to disable.
+
+19
+00:00:51.712 --> 00:00:53.822
+No IP address there to discover.
+
+20
+00:00:53.822 --> 00:00:56.988
+Signed alerts travel over independent LoRa radio
+
+21
+00:00:56.988 --> 00:00:59.099
+to central command.
+
+22
+00:00:59.099 --> 00:01:03.320
+An additional layer of visibility, complementing your existing security.
+
+23
+00:01:03.320 --> 00:01:05.431
+Evidence stays in a separate record,
+
+24
+00:01:05.431 --> 00:01:09.125
+ready to retrieve with a secure hardware key.
+
+25
+00:01:09.125 --> 00:01:10.708
+LayerOne.
+
+26
+00:01:10.708 --> 00:01:11.974
+See deeper.
+
+27
+00:01:11.974 --> 00:01:13.452
+Know sooner.

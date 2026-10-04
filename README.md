@@ -1,5 +1,9 @@
 # LayerOne
 
+[Visit the LayerOne website](https://rodrigogaluppo.github.io/HackYeah2026-LayerOne/)
+to watch the promotional film and explore the MVP. The static landing page and
+its publishing instructions are in [`docs/`](docs/README.md).
+
 LayerOne is a physical side-channel security MVP for detecting abnormal
 electrical behavior in an ESP32 workload and reporting the result through an
 independent, authenticated LoRa path.
