@@ -93,46 +93,94 @@ flowchart LR
     DB --> UI[LayerOne dashboard :8090]
 ```
 
-### Network and trust boundaries
+### MVP communication path and trust boundaries
 
-The management LAN is used for installation, SSH, and viewing the dashboard.
-Sensor telemetry uses the independent LoRa serial path. The USB LoRa adapters
-are transparent serial bridges; they do not provide the cryptographic trust.
+The MVP sensor data path is **LoRa only**. The sensor nodes do not send
+heartbeats, measurements, or alerts to Pi3 over Ethernet or Wi-Fi. SSH and file
+copying are used only to install the software, while a browser is used only to
+view Pi3's dashboard; neither is part of the LayerOne telemetry protocol.
+
+The LoRa modules behave as transparent serial bridges. They transport bytes but
+do not authenticate nodes, encrypt payloads, or decide whether an alert is
+trusted. All security is applied end to end by the LayerOne software before a
+frame reaches the transmitter and after it leaves the receiver.
+
+```mermaid
+flowchart LR
+    subgraph Field[Field side]
+        SP1[Solar Panel 1\nPi1 heartbeat sensor]
+        TARGET[ESP32 physical workload]
+        ACS[ACS current sensor]
+        HANTEK[Hantek 6022BE]
+        SP2[Solar Panel 2\nPi2 CUSUM sensor]
+        TARGET --> ACS --> HANTEK -->|USB samples| SP2
+    end
+
+    subgraph Untrusted[Untrusted transport]
+        TX1[LoRa transmitter 1]
+        TX2[LoRa transmitter 2]
+        AIR((LoRa RF channel))
+        RX[LoRa receiver]
+        TX1 --> AIR
+        TX2 --> AIR
+        AIR --> RX
+    end
+
+    subgraph Command[Pi3 Central Command]
+        GATE[Cryptographic verification gate]
+        REPLAY[Replay guard]
+        DB[(SQLite)]
+        DASH[Dashboard]
+        GATE --> REPLAY --> DB --> DASH
+    end
+
+    SP1 -->|signed and encrypted heartbeat| TX1
+    SP2 -->|signed and encrypted heartbeat or alert| TX2
+    RX -->|transparent serial bytes| GATE
+```
 
 ```mermaid
 flowchart TB
-    subgraph LAN[Management LAN · 192.168.0.0/24]
-        ADMIN[Operator workstation]
-        PI1LAN[Solar Panel 1\n192.168.0.197]
-        PI2LAN[Solar Panel 2\n192.168.0.196]
-        PI3LAN[Pi3 Central Command\n192.168.0.198:8090]
-        ADMIN -. SSH .-> PI1LAN
-        ADMIN -. SSH .-> PI2LAN
-        ADMIN -->|HTTPS/HTTP dashboard| PI3LAN
+    subgraph TrustedNode1[Trust zone: Solar Panel 1]
+        N1S[Ed25519 private signing key]
+        N1X[X25519 private exchange key]
+        KEEP1[Private keys remain local]
+        N1S --> KEEP1
+        N1X --> KEEP1
     end
 
-    subgraph LORA[Independent LoRa serial data plane]
-        PI1RF[Pi1 LoRa TX]
-        PI2RF[Pi2 LoRa TX]
-        PI3RF[Pi3 LoRa RX]
-        PI1RF --> PI3RF
-        PI2RF --> PI3RF
+    subgraph TrustedNode2[Trust zone: Solar Panel 2]
+        N2S[Ed25519 private signing key]
+        N2X[X25519 private exchange key]
+        DET[Live physical detector]
+        KEEP2[Private keys remain local]
+        N2S --> KEEP2
+        N2X --> KEEP2
     end
 
-    PI1LAN --- PI1RF
-    PI2LAN --- PI2RF
-    PI3RF --- PI3LAN
+    subgraph NoTrust[No-trust zone]
+        RF[LoRa radios and RF channel]
+    end
+
+    subgraph TrustedServer[Trust zone: Pi3]
+        SX[Pi3 X25519 private key]
+        REG[Enrolled node public-key registry]
+        VERIFY[Verifier and decryptor]
+        KEEP3[Private key remains local]
+        SX --> KEEP3
+    end
+
+    TrustedNode1 --> RF
+    TrustedNode2 --> RF
+    RF --> TrustedServer
 ```
 
-Default lab addresses are examples. Use DHCP reservations or static addresses
-appropriate for the deployment network.
-
-| Component | Default management address | Data interface | Role |
-|---|---:|---|---|
-| Solar Panel 1 | `192.168.0.197` | LoRa on `/dev/ttyACM0` | Live heartbeat sensor |
-| Solar Panel 2 | `192.168.0.196` | Hantek USB + LoRa on `/dev/ttyACM0` | Live electrical/CUSUM sensor |
-| Pi3 | `192.168.0.198` | LoRa on `/dev/ttyACM0` | Receiver, database, dashboard |
-| ESP32 | USB serial; optional AP | GPIO/physical current path | Controlled workload target |
+| Component | Live input | LoRa output | MVP role |
+|---|---|---|---|
+| Solar Panel 1 | Pi uptime and CPU temperature | Authenticated heartbeat | Availability sensor |
+| Solar Panel 2 | Hantek/ACS electrical windows and Pi health | Authenticated heartbeat or CUSUM alert | Physical anomaly sensor |
+| Pi3 | Transparent LoRa serial frames | None | Trust anchor, receiver, replay guard, database, dashboard |
+| ESP32 | Keypad-controlled bounded workload | None | Controlled physical target |
 
 ### Raspberry Pi responsibilities
 
@@ -163,66 +211,273 @@ zero means **unavailable**, not a measured zero-volt rail. Solar Panel 2 does th
 same for Pi supply voltage while separately reporting live ACS measurements in
 alert payloads.
 
-## Cryptographic protocol
+## LayerOne LoRa cryptographic protocol
 
-Each node owns two private keys that remain on that node:
+The radio link is treated as hostile. Anyone may be able to receive, copy,
+delay, replay, corrupt, or inject LoRa bytes. A packet becomes trusted only
+after Pi3 validates the complete LayerOne cryptographic chain.
 
-- an **Ed25519 signing key** for packet authenticity;
-- an **X25519 exchange key** for deriving encryption keys with Pi3.
+### Long-term identities
 
-Pi3 owns its X25519 private key. Only public keys are exchanged during
-enrollment.
+Every sensor node creates two independent private keys:
 
-For each UTC day, both sides independently derive the same 256-bit key:
+| Key | Stored on | Purpose | Leaves the device? |
+|---|---|---|---|
+| Ed25519 private signing key | Its sensor node | Signs every transmitted frame | Never |
+| Ed25519 public verification key | Pi3 registry | Lets Pi3 authenticate that node | Public only |
+| X25519 node private key | Its sensor node | Computes the shared secret | Never |
+| X25519 node public key | Pi3 registry | Lets Pi3 compute the same shared secret | Public only |
+| X25519 Pi3 private key | Pi3 | Computes one shared secret per node | Never |
+| X25519 Pi3 public key | Both sensor nodes | Lets each node compute its Pi3 shared secret | Public only |
 
-```text
-shared_secret = X25519(node_private, server_public)
-session_key   = HKDF-SHA256(
-    shared_secret,
-    info = "LayerOne/LoRa/v1/" || node_number || day_epoch
-)
-```
+Signing and key agreement are intentionally separate. Ed25519 proves which
+enrolled node created a frame. X25519 creates key material for confidential
+authenticated encryption. Reusing one key for both jobs would mix security
+roles and make rotation and analysis harder.
 
-Payloads use ChaCha20-Poly1305 authenticated encryption. The 96-bit nonce is:
+### Trust bootstrap and node enrollment
 
-```text
-nonce = day_epoch (32 bits) || boot_id (32 bits) || packet_counter (32 bits)
-```
+Enrollment is the moment Pi3 binds a logical identity such as `sensor-rpi2` to
+specific public keys. It is an operator-authorized, out-of-band action; it does
+not happen automatically over the unauthenticated LoRa channel.
 
-The header is authenticated as AEAD associated data. The node then signs the
-header and ciphertext with Ed25519. Pi3 accepts a packet only after signature
-verification, decryption/tag verification, node-status validation, and replay
-checking.
+1. Pi3 creates its X25519 private key locally and prints only its public key.
+2. Each sensor node creates its Ed25519 and X25519 private keys locally.
+3. The Pi3 X25519 public key is copied into each node configuration.
+4. Each node's two public keys are copied to the operator.
+5. The operator runs the Pi3 `register` command with the expected node ID,
+   location, coordinates, Ed25519 public key, and X25519 public key.
+6. Pi3 stores this binding in the `nodes` table with status `active`.
+7. A frame claiming that node number is accepted only if it verifies against
+   the public keys in that enrollment record.
 
 ```mermaid
 sequenceDiagram
-    participant N as Sensor node
-    participant L as Transparent LoRa link
-    participant R as Pi3 receiver
-    participant D as SQLite/dashboard
+    actor O as Authorized operator
+    participant N as New sensor node
+    participant R as Pi3 registry
 
-    N->>N: Read live measurement
-    N->>N: Derive daily X25519/HKDF key
-    N->>N: Encrypt with ChaCha20-Poly1305
-    N->>N: Sign header + ciphertext (Ed25519)
-    N->>L: L1:Base64(packet)
-    L->>R: Transparent serial frame
-    R->>R: Resolve enrolled node
-    R->>R: Verify Ed25519 signature
-    R->>R: Derive daily session key
-    R->>R: Verify tag and decrypt
-    R->>R: Reject duplicate epoch/boot/counter
-    R->>D: Commit verified heartbeat or alert
-    D-->>D: Green heartbeat or red alert UI
+    R->>R: Generate Pi3 X25519 private key
+    R-->>O: Export Pi3 X25519 public key
+    N->>N: Generate Ed25519 signing key pair
+    N->>N: Generate X25519 exchange key pair
+    O->>N: Install Pi3 public exchange key
+    N-->>O: Export node signing public key
+    N-->>O: Export node exchange public key
+    O->>R: Register node ID, role, location, and both public keys
+    R->>R: Store active identity binding
+    Note over N,R: No private key crosses this boundary
 ```
 
-Security properties:
+An attacker who merely transmits `node_number = 2` is not Solar Panel 2. The
+claim becomes meaningful only when the Ed25519 signature verifies with Solar
+Panel 2's enrolled public signing key and the ciphertext authenticates under
+the key derived from its enrolled X25519 public key.
 
-- confidentiality and integrity from ChaCha20-Poly1305;
-- sender authenticity from Ed25519;
-- forward-separated daily keys through HKDF context;
-- nonce uniqueness from day, random boot ID, and monotonic packet counter;
-- replay rejection through the Pi3 SQLite replay guard.
+### Shared-key derivation
+
+X25519 produces the same Diffie-Hellman secret on both sides:
+
+```text
+Node: shared_secret = X25519(node_private, Pi3_public)
+Pi3:  shared_secret = X25519(Pi3_private, node_public)
+```
+
+The shared secret is never transmitted. It is passed through HKDF-SHA256 to
+derive a 256-bit ChaCha20 key. The HKDF context includes the protocol name,
+version, node number, and current day epoch:
+
+```text
+session_key = HKDF-SHA256(
+    input_key_material = shared_secret,
+    salt = none,
+    info = "LayerOne/LoRa/v1/" || node_number || day_epoch,
+    output_length = 32 bytes
+)
+```
+
+```mermaid
+flowchart LR
+    NPRIV[Node X25519 private key] --> NDH[X25519]
+    SPUB[Pi3 X25519 public key] --> NDH
+    NDH --> NS[Same shared secret]
+
+    SPRIV[Pi3 X25519 private key] --> SDH[X25519]
+    NPUB[Enrolled node X25519 public key] --> SDH
+    SDH --> SS[Same shared secret]
+
+    NS --> NH[HKDF-SHA256]
+    SS --> SH[HKDF-SHA256]
+    CTX[Protocol version + node number + UTC day] --> NH
+    CTX --> SH
+    NH --> NK[Node daily session key]
+    SH --> SK[Pi3 daily session key]
+    NK -. equal 32-byte value .- SK
+```
+
+The UTC-day context provides deterministic key separation between days and
+between nodes. This is useful key rotation, but it is **not full forward
+secrecy**: compromise of a long-term X25519 private key and the corresponding
+public key can reproduce keys for known epochs. A production design requiring
+forward secrecy would add an authenticated ephemeral key exchange and a key
+ratchet.
+
+### Nonce construction and uniqueness
+
+ChaCha20-Poly1305 requires a unique 96-bit nonce for every encryption under a
+given key:
+
+```text
+nonce = day_epoch (32 bits) || random_boot_id (32 bits) || counter (32 bits)
+```
+
+- `day_epoch` selects the daily derived key context;
+- `boot_id` is randomly generated every time the node process starts;
+- `counter` begins at zero for that process and increases for every heartbeat
+  or alert.
+
+The random boot ID prevents ordinary process restarts from repeating a nonce
+sequence during the same day. Pi3 also stores the complete
+`node_id/epoch/boot/counter` tuple to reject replayed frames.
+
+### Packet construction on a sensor node
+
+The cleartext header contains routing and cryptographic context, not the sensor
+measurement. It is encoded with the network-byte-order layout
+`!2sBBBBIII`:
+
+| Header field | Size | Meaning |
+|---|---:|---|
+| Magic | 2 bytes | `L1` protocol discriminator |
+| Version | 1 byte | Protocol version |
+| Kind | 1 byte | Heartbeat or alert |
+| Node number | 1 byte | Index used to resolve the enrolled identity |
+| Key version | 1 byte | Key-generation identifier |
+| Day epoch | 4 bytes | HKDF context and nonce component |
+| Boot ID | 4 bytes | Random process-session identifier |
+| Counter | 4 bytes | Monotonic packet sequence |
+
+The node then performs these operations in order:
+
+```mermaid
+flowchart TD
+    LIVE[Live heartbeat or measured CUSUM alert] --> PACK[Pack binary payload]
+    META[Version, kind, node, epoch, boot, counter] --> HEADER[Pack cleartext header]
+    KEY[X25519 + HKDF daily key] --> AEAD
+    NONCE[Epoch + boot + counter nonce] --> AEAD
+    PACK --> AEAD[ChaCha20-Poly1305 encrypt]
+    HEADER -->|authenticated associated data| AEAD
+    AEAD --> CT[Ciphertext + 16-byte authentication tag]
+    HEADER --> SIGN[Ed25519 sign]
+    CT --> SIGN
+    SIGN --> SIG[64-byte node signature]
+    HEADER --> FRAME[Concatenate frame]
+    CT --> FRAME
+    SIG --> FRAME
+    FRAME --> B64[Base64 with L1 prefix and newline]
+    B64 --> RADIO[Transparent LoRa serial adapter]
+```
+
+Conceptually, the transmitted line is:
+
+```text
+"L1:" || Base64(
+    header ||
+    ChaCha20Poly1305(session_key, nonce, payload, AAD=header) ||
+    Ed25519Sign(node_signing_private, header || ciphertext_and_tag)
+) || "\n"
+```
+
+The Ed25519 signature covers the cleartext header and the encrypted payload,
+including its Poly1305 tag. Changing the node number, counter, message kind, or
+ciphertext invalidates the signature.
+
+### Heartbeat and alert payloads
+
+A heartbeat carries protocol payload version, live uptime, live CPU
+temperature, and the available supply-voltage field. An alert additionally
+carries:
+
+- severity;
+- physical detection time;
+- random event reference;
+- latitude and longitude;
+- measured ACS mean in millivolts;
+- learned baseline in millivolts;
+- measured delta in millivolts;
+- CUSUM score.
+
+These alert measurements are produced before encryption by Solar Panel 2's
+physical detector. Pi3 decrypts and displays them; it does not invent them.
+
+### Verification pipeline on Pi3
+
+Pi3 treats every received line as untrusted input. Acceptance follows a
+fail-closed sequence:
+
+```mermaid
+flowchart TD
+    RX[Receive serial line] --> PREFIX{Valid L1 prefix and Base64?}
+    PREFIX -- No --> DROP1[Reject]
+    PREFIX -- Yes --> HDR{Known magic, version, and node?}
+    HDR -- No --> DROP2[Reject and audit]
+    HDR -- Yes --> REG{Node enrolled and active?}
+    REG -- No --> DROP3[Reject unknown identity]
+    REG -- Yes --> SIG{Ed25519 signature valid?}
+    SIG -- No --> DROP4[Reject forgery or corruption]
+    SIG -- Yes --> KDF[Derive node/day key with X25519 + HKDF]
+    KDF --> TAG{Poly1305 tag valid and decrypts?}
+    TAG -- No --> DROP5[Reject tampering or wrong key]
+    TAG -- Yes --> REPLAY{Epoch/boot/counter already seen?}
+    REPLAY -- Yes --> DROP6[Reject replay]
+    REPLAY -- No --> TYPE{Payload length and type valid?}
+    TYPE -- No --> DROP7[Reject malformed payload]
+    TYPE -- Yes --> COMMIT[Update node and commit heartbeat or alert]
+    COMMIT --> UI[Green heartbeat or red security event]
+```
+
+The replay tuple is inserted under a unique database constraint. A repeated
+valid packet therefore cannot create a second event or refresh node state.
+
+### Why alerts are attributable
+
+```mermaid
+flowchart LR
+    DET[CUSUM condition on Solar Panel 2] --> PAYLOAD[Measured alert payload]
+    PAYLOAD --> ENC[Encrypt for Pi3]
+    ENC --> SIGN[Sign with Solar Panel 2 private Ed25519 key]
+    SIGN --> RF[Untrusted LoRa channel]
+    RF --> VERIFY[Verify with enrolled Solar Panel 2 public key]
+    VERIFY --> DECRYPT[Authenticate and decrypt with derived shared key]
+    DECRYPT --> REPLAY[Pass replay guard]
+    REPLAY --> EVENT[Attributed verified event in Pi3]
+```
+
+The dashboard's red warning means Pi3 received a new alert that passed this
+chain. It does not mean LayerOne has conclusively classified malware; it means
+the enrolled physical sensor reported statistically significant behavior that
+requires investigation.
+
+### Security properties and limits
+
+| Threat | LayerOne response |
+|---|---|
+| Passive LoRa eavesdropping | Measurement payload remains encrypted with ChaCha20-Poly1305 |
+| Frame modification | Ed25519 signature and Poly1305 tag fail |
+| Node impersonation without keys | Signature verification fails |
+| Replay of a captured valid frame | Unique epoch/boot/counter database constraint rejects it |
+| Packet from an unenrolled node | Active-node registry lookup rejects it |
+| Cross-node packet substitution | Node-specific public keys and HKDF node context prevent acceptance |
+| Database/UI fabrication | Outside the LoRa protocol; protect Pi3 and its operator access |
+| RF jamming or packet deletion | Detectable as missing heartbeats, but not prevented |
+| Traffic analysis | Header and transmission timing remain visible |
+| Node private-key compromise | Attacker may impersonate that node until it is revoked and re-enrolled |
+| Pi3 X25519 private-key disclosure | Recorded and future payload confidentiality is compromised; node signatures still prevent forgery without a node's Ed25519 private key |
+
+The MVP provides application-layer confidentiality, integrity, authenticity,
+node attribution, and replay resistance over an untrusted transparent radio.
+It does not claim anti-jamming, anonymous routing, hardware-backed key storage,
+or forward secrecy.
 
 ## Physical detection and CUSUM mathematics
 
@@ -235,18 +490,18 @@ influence of isolated capture spikes.
 During startup, Solar Panel 2 captures quiet windows while the ESP32 is in its
 normal state. The baseline center is the median:
 
-```math
-\mu = \operatorname{median}(x_1, x_2, \ldots, x_n)
+```text
+μ = median(x₁, x₂, …, xₙ)
 ```
 
 Noise is estimated robustly from the median absolute deviation:
 
-```math
-\operatorname{MAD} = \operatorname{median}(|x_i - \mu|)
+```text
+MAD = median(|xᵢ − μ|)
 ```
 
-```math
-\sigma = \max(1.4826 \cdot \operatorname{MAD},\ \sigma_{floor})
+```text
+σ = max(1.4826 × MAD, σ_floor)
 ```
 
 The default noise floor is `0.10 mV`.
@@ -777,9 +1032,10 @@ Recommended backup policy:
 - use file mode `0600` for private keys and JSON containing operational data;
 - rotate and re-enroll a node if its private key may have been exposed.
 
-The dashboard is a lab interface and does not add TLS or user authentication by
-itself. Place it on an isolated management network or behind an authenticated
-reverse proxy before broader deployment.
+The dashboard is an MVP display and does not add TLS or user authentication by
+itself. For the HackYeah demo, expose port `8090` only to the presentation
+machine. A production deployment must add authenticated access and transport
+security; those controls are outside this MVP.
 
 ## Publish to GitHub
 
