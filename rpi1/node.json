@@ -1,0 +1,11 @@
+{
+  "node_id": "sensor-rpi1",
+  "serial_port": "/dev/ttyACM0",
+  "baud": 115200,
+  "key_dir": "/home/russo/layerone/keys/sensor-rpi1",
+  "server_exchange_public": "PASTE_PI3_BASE64_X25519_PUBLIC_KEY",
+  "heartbeat_seconds": 17,
+  "startup_delay_seconds": 3,
+  "latitude": 52.2297,
+  "longitude": 21.0122
+}

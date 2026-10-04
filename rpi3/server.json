@@ -1,0 +1,7 @@
+{
+  "serial_port": "/dev/ttyACM0",
+  "baud": 115200,
+  "heartbeat_only_nodes": ["sensor-rpi1"],
+  "database": "/home/russo/layerone/data/central-command.db",
+  "server_exchange_key": "/home/russo/layerone/keys/server/exchange.key"
+}

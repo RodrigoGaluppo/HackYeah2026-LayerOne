@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Runtime data and secrets
+data/
+keys/
+*.db
+*.db-*
+*.key
+*.pem
+*.log
+*.csv
+
+# Firmware build products
+build/
+*.bin
+*.elf
+*.map
+*.hex
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

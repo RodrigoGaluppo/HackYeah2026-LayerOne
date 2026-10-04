@@ -1,0 +1,15 @@
+[Unit]
+Description=LayerOne secure LoRa receiver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=russo
+WorkingDirectory=/home/russo/layerone
+ExecStart=/usr/bin/python3 /home/russo/layerone/layerone.py server --config /home/russo/layerone/server.json
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
